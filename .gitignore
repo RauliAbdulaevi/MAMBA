@@ -3,4 +3,4 @@ dist/
 .env
 .env.local
 *.log
-server/data/*.json
+apps/api/data/*.json

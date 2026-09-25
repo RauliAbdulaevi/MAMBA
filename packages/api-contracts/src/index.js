@@ -46,6 +46,37 @@ export function getRegistrationValidationError({ username, password, confirmPass
   return null
 }
 
+export const walletAvatarPresets = ['mamba', 'orbit', 'fang', 'mono']
+
+export function getWalletNameValidationError(name) {
+  const value = typeof name === 'string' ? name.trim() : ''
+  if (!value) return { field: 'name', message: 'Wallet name is required.' }
+  if (value.length > 32) return { field: 'name', message: 'Wallet name must be 32 characters or fewer.' }
+  if (/[<>\u0000-\u001f\u007f]/.test(value)) return { field: 'name', message: 'Wallet name contains unsupported characters.' }
+  return null
+}
+
+export function getWalletAvatarImageValidationError(image) {
+  if (image == null || image === '') return null
+  const match = typeof image === 'string' && /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+=*)$/.exec(image)
+  if (!match || image.length > 150_000) {
+    return { field: 'avatarImage', message: 'Choose a PNG, JPEG, or WebP image under 110 KB after cropping.' }
+  }
+  try {
+    const decoded = globalThis.atob(match[2])
+    const mime = match[1]
+    const signatureValid = mime === 'png'
+      ? decoded.startsWith('\x89PNG\r\n\x1a\n')
+      : mime === 'jpeg'
+        ? decoded.startsWith('\xff\xd8\xff')
+        : decoded.startsWith('RIFF') && decoded.slice(8, 12) === 'WEBP'
+    if (!signatureValid) throw new Error('Image signature does not match its type.')
+  } catch {
+    return { field: 'avatarImage', message: 'Choose a valid PNG, JPEG, or WebP image under 110 KB after cropping.' }
+  }
+  return null
+}
+
 export function normalizeAddressForComparison(chain, address) {
   const value = typeof address === 'string' ? address.trim() : ''
   if (chain === 'evm') return value.toLowerCase()

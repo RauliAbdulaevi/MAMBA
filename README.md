@@ -1,36 +1,42 @@
-# Mamba WDK Wallet
+# MAMBA Wallet
 
-A modern React wallet app backed by Express and Tether WDK. It supports Bitcoin, an EVM chain, and Solana with local username/password auth, protected wallet screens, encrypted per-user recovery phrases, balances, QR receive cards, custom EVM tokens, transaction previews, EVM swaps through Velora, contacts, activity, notifications, and seed reveal with password re-authentication.
+A React public website and wallet app backed by Express and Tether WDK. The public MAMBA site describes only features present in this project; the protected wallet remains at `/app`.
 
 ## Project Structure
 
 ```text
 .
-|-- src/
-|   |-- app/
-|   |   `-- App.jsx           App shell, auth, and wallet screens
-|   |-- main.jsx              React entry point
-|   `-- styles.css            Shared MAMBA theme and layout
-|-- public/
-|   `-- mamba-logo.jpg
-|-- server/
-|   |-- src/
-|   |   |-- app.js             Express API and WDK-backed handlers
-|   |   `-- server.js          HTTP server entry point
-|   `-- data/                  Local encrypted user vaults, ignored by Git
-|-- shared/
-|   `-- wallet-validation.js   Client/server validation and contact matching
+|-- apps/
+|   |-- web/
+|   |   |-- public/mamba-logo.jpg
+|   |   |-- src/
+|   |   |   |-- app/App.jsx     App shell, auth, and wallet screens
+|   |   |   |-- site/           Public pages, feature pages, and site styles
+|   |   |   |-- main.jsx        React entry point
+|   |   |   `-- styles.css      Shared MAMBA theme and layout
+|   |   |-- index.html
+|   |   |-- package.json
+|   |   `-- vite.config.js
+|   `-- api/
+|       |-- data/               Local encrypted user vaults, ignored by Git
+|       |-- src/
+|       |   |-- app.js          Express API and WDK-backed handlers
+|       |   `-- server.js       HTTP server entry point
+|       `-- package.json
+|-- packages/
+|   `-- api-contracts/
+|       |-- src/index.js        Shared credential and address validation
+|       `-- package.json
 |-- tests/
 |   `-- wallet-validation.test.js
-|-- index.html
-|-- vite.config.js
+|-- .env                        Local providers; ignored by Git
 |-- .env.example
 |-- .gitignore
 |-- package-lock.json
 `-- package.json
 ```
 
-The project stays JavaScript-based and uses one root package so the existing Vite client and Express/WDK server continue to share their current dependencies and scripts. The pasted TypeScript, Prisma, React Router, and separate state/query packages are not part of this codebase, so they are intentionally not represented here.
+The root package manages the `apps/web`, `apps/api`, and `packages/api-contracts` npm workspaces. The app stays JavaScript-based to preserve the current implementation; TypeScript, Prisma, React Router, and state/query libraries are not added because the current app does not use them.
 
 ## Setup
 
@@ -40,7 +46,16 @@ copy .env.example .env
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`.
+Open the public site at `http://127.0.0.1:5173` and the protected wallet at `http://127.0.0.1:5173/app`.
+
+## Public Pages
+
+- `/` home and product overview
+- `/features/multichain`, `/features/send-receive`, `/features/swaps`, `/features/portfolio`, `/features/activity`
+- `/developers` explains the WDK integration; MAMBA does not currently offer a public SDK or developer API
+- `/updates` currently has no published posts
+- `/trust` and `/risks` describe the current implementation and its limitations
+- `/privacy` and `/terms` are drafts and require legal and owner review before publication
 
 ## Environment
 
@@ -68,7 +83,7 @@ PORT=8787
 - The browser stores no raw seed, private key, or mnemonic.
 - Normal wallet APIs return only public addresses, balances, QR codes, quotes, and transaction results.
 - Seed reveal requires password re-authentication plus typing `REVEAL_SEED`.
-- `.env` and `server/data/*.json` are ignored by Git.
+- `.env` and `apps/api/data/*.json` are ignored by Git.
 
 ## WDK Modules
 

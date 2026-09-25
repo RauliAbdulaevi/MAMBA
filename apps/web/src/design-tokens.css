@@ -1,0 +1,12 @@
+:root {
+  --mamba-black: #080909;
+  --mamba-charcoal: #141515;
+  --mamba-surface: #171818;
+  --mamba-raised: #202121;
+  --mamba-line: #303232;
+  --mamba-paper: #f4f4f1;
+  --mamba-muted: #a4a7a4;
+  --mamba-radius: 8px;
+  --mamba-motion-fast: 150ms;
+  --mamba-motion-panel: 220ms;
+}

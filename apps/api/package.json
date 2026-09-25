@@ -1,0 +1,22 @@
+{
+  "name": "@mamba/api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "check": "node --check src/app.js && node --check src/server.js"
+  },
+  "dependencies": {
+    "@mamba/api-contracts": "1.0.0",
+    "@tetherto/wdk": "^1.0.0-beta.18",
+    "@tetherto/wdk-protocol-swap-velora-evm": "^1.0.0-beta.9",
+    "@tetherto/wdk-wallet-btc": "^1.0.0-beta.16",
+    "@tetherto/wdk-wallet-evm": "^1.0.0-beta.19",
+    "@tetherto/wdk-wallet-solana": "^1.0.0-beta.16",
+    "ethers": "^6.17.0",
+    "express": "^5.2.1",
+    "qrcode": "^1.5.4"
+  }
+}

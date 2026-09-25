@@ -3,34 +3,25 @@
   "version": "1.0.0",
   "description": "A polished React multi-chain wallet overview using Tether WDK for Bitcoin and Polygon.",
   "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/api",
+    "packages/api-contracts"
+  ],
   "scripts": {
-    "dev": "concurrently \"npm run server\" \"npm run client\"",
-    "client": "vite --host 127.0.0.1",
-    "server": "node server/src/server.js",
-    "build": "vite build",
+    "dev": "concurrently -k \"npm run dev --workspace @mamba/api\" \"npm run dev --workspace @mamba/web\"",
+    "client": "npm run dev --workspace @mamba/web",
+    "server": "npm run dev --workspace @mamba/api",
+    "build": "npm run build --workspace @mamba/web",
     "test": "node --test",
-    "start": "node server/src/server.js",
-    "check": "node --check server/src/app.js && node --check server/src/server.js"
+    "start": "npm run start --workspace @mamba/api",
+    "check": "npm run check --workspace @mamba/api"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
-  "dependencies": {
-    "@tetherto/wdk": "^1.0.0-beta.18",
-    "@tetherto/wdk-protocol-swap-velora-evm": "^1.0.0-beta.9",
-    "@tetherto/wdk-wallet-btc": "^1.0.0-beta.16",
-    "@tetherto/wdk-wallet-evm": "^1.0.0-beta.19",
-    "@tetherto/wdk-wallet-solana": "^1.0.0-beta.16",
-    "@vitejs/plugin-react": "^6.1.1",
-    "concurrently": "^10.0.5",
-    "ethers": "^6.17.0",
-    "express": "^5.2.1",
-    "lucide-react": "^1.48.0",
-    "qrcode": "^1.5.4",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "typescript": "^7.0.2",
-    "vite": "^8.3.1"
+  "devDependencies": {
+    "concurrently": "^10.0.5"
   }
 }

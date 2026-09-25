@@ -4,8 +4,10 @@ import {
   getContactAddress,
   getContactMatch,
   getCredentialValidationError,
-  getRegistrationValidationError
-} from '../shared/wallet-validation.js'
+  getRegistrationValidationError,
+  getWalletAvatarImageValidationError,
+  getWalletNameValidationError
+} from '../packages/api-contracts/src/index.js'
 
 const evmAddress = '0xAbCd000000000000000000000000000000001234'
 
@@ -60,4 +62,18 @@ test('server credential validation enforces the same username and password rules
   assert.equal(getCredentialValidationError('rauli', 'TestPassword123!'), null)
   assert.equal(getCredentialValidationError('x', 'TestPassword123!')?.field, 'username')
   assert.equal(getCredentialValidationError('rauli', 'short')?.field, 'password')
+})
+
+test('wallet profile names are required, bounded, and plain text', () => {
+  assert.equal(getWalletNameValidationError('  Long-term vault  '), null)
+  assert.equal(getWalletNameValidationError('  ')?.field, 'name')
+  assert.equal(getWalletNameValidationError('x'.repeat(33))?.field, 'name')
+  assert.equal(getWalletNameValidationError('<img>')?.field, 'name')
+})
+
+test('wallet avatar images accept bounded raster data URLs only', () => {
+  assert.equal(getWalletAvatarImageValidationError('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'), null)
+  assert.equal(getWalletAvatarImageValidationError('data:image/svg+xml;base64,PHN2Zz4=' )?.field, 'avatarImage')
+  assert.equal(getWalletAvatarImageValidationError('data:image/webp;base64,YWJj')?.field, 'avatarImage')
+  assert.equal(getWalletAvatarImageValidationError(`data:image/png;base64,${'A'.repeat(450_001)}`)?.field, 'avatarImage')
 })

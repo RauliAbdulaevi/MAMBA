@@ -10,16 +10,21 @@ import WalletManagerEvm from '@tetherto/wdk-wallet-evm'
 import WalletManagerSolana from '@tetherto/wdk-wallet-solana'
 import VeloraProtocolEvm from '@tetherto/wdk-protocol-swap-velora-evm'
 import { Contract, JsonRpcProvider, formatUnits, isAddress } from 'ethers'
-import { getCredentialValidationError } from '../../shared/wallet-validation.js'
+import {
+  getCredentialValidationError,
+  getWalletAvatarImageValidationError,
+  getWalletNameValidationError,
+  walletAvatarPresets
+} from '@mamba/api-contracts'
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const rootDir = path.resolve(__dirname, '../../..')
 loadLocalEnv()
 
 const app = express()
 const port = Number(process.env.PORT || 8787)
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const rootDir = path.resolve(__dirname, '../..')
-const distDir = path.join(rootDir, 'dist')
-const dataDir = path.join(rootDir, 'server', 'data')
+const distDir = path.join(rootDir, 'apps', 'web', 'dist')
+const dataDir = path.resolve(process.env.MAMBA_DATA_DIR || path.join(rootDir, 'apps', 'api', 'data'))
 const usersFile = path.join(dataDir, 'users.json')
 const sessions = new Map()
 const cookieName = 'mamba_sid'
@@ -30,7 +35,7 @@ const erc20Abi = [
   'function balanceOf(address owner) view returns (uint256)'
 ]
 
-app.use(express.json({ limit: '32kb' }))
+app.use(express.json({ limit: '700kb' }))
 
 app.get('/api/health', (_request, response) => {
   response.json({ ok: true, service: 'mamba-wallet' })
@@ -52,23 +57,33 @@ app.post('/api/auth/register', async (request, response) => {
 
     const passwordSalt = randomBase64(16)
     const seedVault = await encryptMnemonic(mnemonic, password)
+    const walletId = crypto.randomUUID()
+    const wallet = {
+      id: walletId,
+      name: 'Main wallet',
+      avatarPreset: 'mamba',
+      avatarImage: null,
+      seedVault,
+      backupConfirmed: Boolean(request.body?.mnemonic),
+      createdAt: new Date().toISOString()
+    }
     const user = {
       id: crypto.randomUUID(),
       username,
       passwordSalt,
       passwordHash: await hashPassword(password, passwordSalt),
-      seedVault,
+      wallets: [wallet],
+      activeWalletId: walletId,
       tokens: [],
       contacts: [],
       activity: [],
       notifications: [],
-      backupConfirmed: Boolean(request.body?.mnemonic),
       createdAt: new Date().toISOString()
     }
 
     store.users.push(user)
     writeUserStore(store)
-    setSession(response, user.id, await deriveKey(password, seedVault.salt))
+    setSession(response, user.id, await deriveWalletUnlockKeys(user, password))
     response.status(201).json({ ok: true, user: publicUser(user) })
   } catch (error) {
     sendError(response, error, 'Registration failed.')
@@ -83,7 +98,8 @@ app.post('/api/auth/login', async (request, response) => {
       throw new PublicError('Invalid username or password.', 'Check your details and try again.')
     }
 
-    setSession(response, user.id, await deriveKey(password, user.seedVault.salt))
+    const migratedUser = updateUser(user.id, () => {})
+    setSession(response, user.id, await deriveWalletUnlockKeys(migratedUser, password))
     response.json({ ok: true, user: publicUser(user) })
   } catch (error) {
     sendError(response, error, 'Login failed.')
@@ -100,7 +116,98 @@ app.post('/api/auth/logout', (request, response) => {
 app.get('/api/auth/me', (request, response) => {
   const user = requireUser(request, response)
   if (!user) return
-  response.json({ ok: true, user: publicUser(user) })
+  const normalizedUser = updateUser(user.id, () => {})
+  response.json({ ok: true, user: publicUser(normalizedUser) })
+})
+
+app.post('/api/wallet-profiles', async (request, response) => {
+  const user = requireUser(request, response)
+  if (!user) return
+
+  try {
+    const name = requireWalletName(request.body?.name)
+    const password = requireText(request.body?.password, 'Password is required to add a wallet.')
+    if (!(await verifyPassword(user, password))) {
+      throw new PublicError('Password re-authentication failed.', 'Enter your account password to add a wallet.')
+    }
+    if (user.wallets.length >= 20) {
+      throw new PublicError('Wallet limit reached.', 'Remove an unused wallet before adding another. Up to 20 wallets are supported.')
+    }
+    if (user.wallets.some((wallet) => wallet.name.toLowerCase() === name.toLowerCase())) {
+      throw new PublicError('That wallet name is already in use.', 'Choose a different name so you can identify each wallet.')
+    }
+
+    const importedMnemonic = normalizeMnemonic(request.body?.mnemonic)
+    const mnemonic = importedMnemonic || WDK.getRandomSeedPhrase(12)
+    if (!WDK.isValidSeed(mnemonic)) {
+      throw new PublicError('Recovery phrase is invalid.', 'Check the words and spacing, then try importing again.')
+    }
+    const seedVault = await encryptMnemonic(mnemonic, password)
+    const usedAvatarPresets = new Set(user.wallets.filter((item) => !item.avatarImage).map((item) => item.avatarPreset))
+    const wallet = {
+      id: crypto.randomUUID(),
+      name,
+      avatarPreset: walletAvatarPresets.find((preset) => !usedAvatarPresets.has(preset)) || walletAvatarPresets[user.wallets.length % walletAvatarPresets.length],
+      avatarImage: null,
+      seedVault,
+      backupConfirmed: Boolean(importedMnemonic),
+      createdAt: new Date().toISOString()
+    }
+
+    const updated = updateUser(user.id, (draft) => {
+      draft.wallets.push(wallet)
+      draft.activeWalletId = wallet.id
+    })
+    const session = sessions.get(getSessionId(request))
+    if (session) session.unlockKeys[wallet.id] = await deriveKey(password, seedVault.salt)
+    response.status(201).json({ ok: true, wallet: publicWalletProfile(wallet), user: publicUser(updated) })
+  } catch (error) {
+    sendError(response, error, 'Could not add wallet.')
+  }
+})
+
+app.post('/api/wallet-profiles/active', (request, response) => {
+  const user = requireUser(request, response)
+  if (!user) return
+  try {
+    const wallet = getWalletProfile(user, request.body?.walletId)
+    const updated = updateUser(user.id, (draft) => { draft.activeWalletId = wallet.id })
+    response.json({ ok: true, activeWalletId: wallet.id, user: publicUser(updated) })
+  } catch (error) {
+    sendError(response, error, 'Could not switch wallets.')
+  }
+})
+
+app.patch('/api/wallet-profiles/:walletId', (request, response) => {
+  const user = requireUser(request, response)
+  if (!user) return
+  try {
+    const wallet = getWalletProfile(user, request.params.walletId)
+    const name = requireWalletName(request.body?.name)
+    if (user.wallets.some((item) => item.id !== wallet.id && item.name.toLowerCase() === name.toLowerCase())) {
+      throw new PublicError('That wallet name is already in use.', 'Choose a different name so you can identify each wallet.')
+    }
+
+    const hasAvatarImage = Object.hasOwn(request.body || {}, 'avatarImage')
+    const hasAvatarPreset = Object.hasOwn(request.body || {}, 'avatarPreset')
+    const avatarImage = hasAvatarImage ? request.body.avatarImage : hasAvatarPreset ? null : wallet.avatarImage
+    const imageError = getWalletAvatarImageValidationError(avatarImage)
+    if (imageError) throw new PublicError(imageError.message, 'Choose a cropped PNG, JPEG, or WebP image under 110 KB.')
+    const avatarPreset = avatarImage ? null : request.body?.avatarPreset ?? wallet.avatarPreset ?? 'mamba'
+    if (avatarPreset !== null && !walletAvatarPresets.includes(avatarPreset)) {
+      throw new PublicError('Choose a supported wallet avatar.', 'Select one of the MAMBA avatar presets.')
+    }
+
+    const updated = updateUser(user.id, (draft) => {
+      const target = draft.wallets.find((item) => item.id === wallet.id)
+      target.name = name
+      target.avatarImage = avatarImage || null
+      target.avatarPreset = avatarImage ? null : avatarPreset
+    })
+    response.json({ ok: true, wallet: publicWalletProfile(getWalletProfile(updated, wallet.id)), user: publicUser(updated) })
+  } catch (error) {
+    sendError(response, error, 'Could not save wallet profile.')
+  }
 })
 
 app.get('/api/wallet', async (request, response) => {
@@ -120,7 +227,8 @@ app.get('/api/wallet', async (request, response) => {
 
   let wdk
   try {
-    const mnemonic = await decryptMnemonic(user.seedVault, null, request)
+    const activeWallet = getWalletProfile(user, request.query.walletId)
+    const mnemonic = await decryptMnemonic(activeWallet.seedVault, null, request, activeWallet.id)
     wdk = createWdk(mnemonic, config.value)
     const specs = getChainSpecs(config.value)
     const accounts = await Promise.all(specs.map((spec) => wdk.getAccount(spec.id, 0)))
@@ -130,7 +238,8 @@ app.get('/api/wallet', async (request, response) => {
     response.json({
       ok: true,
       generatedAt: new Date().toISOString(),
-      user: publicUser(user),
+      activeWalletId: activeWallet.id,
+      walletProfiles: user.wallets.map(publicWalletProfile),
       chains,
       assets,
       portfolio: buildPortfolio(assets),
@@ -181,7 +290,15 @@ app.get('/api/networks', (request, response) => {
 app.get('/api/activity', (request, response) => {
   const user = requireUser(request, response)
   if (!user) return
-  response.json({ ok: true, activity: getUser(user.id).activity || [] })
+  try {
+    const wallet = getWalletProfile(user, request.query.walletId)
+    const activity = (getUser(user.id).activity || []).filter((item) => (
+      item.walletId === wallet.id || (!item.walletId && wallet.id === user.wallets[0]?.id)
+    ))
+    response.json({ ok: true, activity })
+  } catch (error) {
+    sendError(response, error, 'Could not load wallet activity.')
+  }
 })
 
 app.get('/api/notifications', (request, response) => {
@@ -257,11 +374,16 @@ app.post('/api/tokens', async (request, response) => {
 app.post('/api/profile/backup-confirmed', (request, response) => {
   const user = requireUser(request, response)
   if (!user) return
-  updateUser(user.id, (draft) => {
-    draft.backupConfirmed = true
-  })
-  addNotification(user.id, 'security', 'Recovery phrase backup was marked complete.')
-  response.json({ ok: true })
+  try {
+    const wallet = getWalletProfile(user, request.body?.walletId)
+    updateUser(user.id, (draft) => {
+      draft.wallets.find((item) => item.id === wallet.id).backupConfirmed = true
+    })
+    addNotification(user.id, 'security', 'Recovery phrase backup was marked complete.')
+    response.json({ ok: true, wallet: publicWalletProfile(getWalletProfile(getUser(user.id), wallet.id)) })
+  } catch (error) {
+    sendError(response, error, 'Could not update backup status.')
+  }
 })
 
 app.post('/api/swap/quote', async (request, response) => {
@@ -286,7 +408,8 @@ app.post('/api/profile/reveal-seed', async (request, response) => {
       throw new PublicError('Password re-authentication failed.', 'Enter your account password to reveal the recovery phrase.')
     }
 
-    const mnemonic = await decryptMnemonic(user.seedVault, password)
+    const wallet = getWalletProfile(user, request.body?.walletId)
+    const mnemonic = await decryptMnemonic(wallet.seedVault, password, request, wallet.id)
     response.json({
       ok: true,
       mnemonic,
@@ -326,7 +449,8 @@ async function handleTransactionRequest(request, response, mode) {
     }
 
     const tx = parseNativeTransaction(request.body ?? {}, config.value)
-    const mnemonic = await decryptMnemonic(user.seedVault, null, request)
+    const wallet = getWalletProfile(user, request.body?.walletId)
+    const mnemonic = await decryptMnemonic(wallet.seedVault, null, request, wallet.id)
     wdk = createWdk(mnemonic, config.value)
     const account = await wdk.getAccount(tx.chain, 0)
 
@@ -334,6 +458,7 @@ async function handleTransactionRequest(request, response, mode) {
       const quote = await account.quoteSendTransaction({ to: tx.to, value: tx.value })
       response.json({
         ok: true,
+        walletId: wallet.id,
         chain: tx.chain,
         chainName: tx.spec.name,
         symbol: tx.spec.symbol,
@@ -351,6 +476,7 @@ async function handleTransactionRequest(request, response, mode) {
     const result = await account.sendTransaction({ to: tx.to, value: tx.value })
     const hash = result.hash ?? result.txid ?? result.signature
     recordActivity(user.id, {
+      walletId: wallet.id,
       type: 'send',
       chain: tx.chain,
       asset: tx.spec.symbol,
@@ -373,6 +499,7 @@ async function handleTransactionRequest(request, response, mode) {
   } catch (error) {
     if (mode === 'send' && user?.id) {
       recordActivity(user.id, {
+        walletId: request.body?.walletId || user.activeWalletId,
         type: 'send',
         chain: request.body?.chain || 'unknown',
         asset: 'native',
@@ -412,7 +539,8 @@ async function handleSwapRequest(request, response, mode) {
       await requirePasswordCheck(user, request.body?.password)
     }
 
-    const mnemonic = await decryptMnemonic(user.seedVault, null, request)
+    const wallet = getWalletProfile(user, request.body?.walletId)
+    const mnemonic = await decryptMnemonic(wallet.seedVault, null, request, wallet.id)
     wdk = createWdk(mnemonic, config.value)
     const account = await wdk.getAccount('evm', 0)
     const protocol = new VeloraProtocolEvm(account, { swapMaxFee: config.value.evmSwapMaxFee })
@@ -422,6 +550,7 @@ async function handleSwapRequest(request, response, mode) {
       const minimumReceived = applySlippage(quote.tokenOutAmount, swap.slippageBps)
       response.json({
         ok: true,
+        walletId: wallet.id,
         provider: 'Velora',
         chain: 'evm',
         network: config.value.evmChainName,
@@ -447,6 +576,7 @@ async function handleSwapRequest(request, response, mode) {
       minAmountOut: applySlippage(quote.tokenOutAmount, swap.slippageBps)
     }, { swapMaxFee: config.value.evmSwapMaxFee })
     recordActivity(user.id, {
+      walletId: wallet.id,
       type: 'swap',
       chain: 'evm',
       asset: `${swap.tokenIn} -> ${swap.tokenOut}`,
@@ -471,6 +601,7 @@ async function handleSwapRequest(request, response, mode) {
   } catch (error) {
     if (mode === 'send' && user?.id) {
       recordActivity(user.id, {
+        walletId: request.body?.walletId || user.activeWalletId,
         type: 'swap',
         chain: 'evm',
         asset: `${request.body?.tokenIn || '?'} -> ${request.body?.tokenOut || '?'}`,
@@ -919,11 +1050,18 @@ async function encryptMnemonic(mnemonic, password) {
   }
 }
 
-async function decryptMnemonic(vault, password, request) {
+async function deriveWalletUnlockKeys(user, password) {
+  return Object.fromEntries(await Promise.all(user.wallets.map(async (wallet) => [
+    wallet.id,
+    await deriveKey(password, wallet.seedVault.salt)
+  ])))
+}
+
+async function decryptMnemonic(vault, password, request, walletId) {
   let keyBase64 = password ? await deriveKey(password, vault.salt) : null
   if (!keyBase64) {
     const session = sessions.get(getSessionId(request))
-    keyBase64 = session?.unlockKey
+    keyBase64 = session?.unlockKeys?.[walletId]
   }
 
   if (!keyBase64) {
@@ -948,11 +1086,11 @@ function scrypt(secret, salt, keyLength) {
   })
 }
 
-function setSession(response, userId, unlockKey) {
+function setSession(response, userId, unlockKeys) {
   const sid = crypto.randomBytes(32).toString('base64url')
   sessions.set(sid, {
     userId,
-    unlockKey,
+    unlockKeys,
     expiresAt: Date.now() + 1000 * 60 * 60 * 8
   })
 
@@ -1019,12 +1157,40 @@ function findUser(username) {
 }
 
 function publicUser(user) {
+  const activeWallet = user.wallets.find((wallet) => wallet.id === user.activeWalletId) || user.wallets[0]
   return {
     id: user.id,
     username: user.username,
-    backupConfirmed: Boolean(user.backupConfirmed),
+    activeWalletId: activeWallet?.id || null,
+    backupConfirmed: Boolean(activeWallet?.backupConfirmed),
+    walletProfiles: user.wallets.map(publicWalletProfile),
     createdAt: user.createdAt
   }
+}
+
+function publicWalletProfile(wallet) {
+  return {
+    id: wallet.id,
+    name: wallet.name,
+    avatarPreset: wallet.avatarPreset || 'mamba',
+    avatarImage: wallet.avatarImage || null,
+    backupConfirmed: Boolean(wallet.backupConfirmed),
+    createdAt: wallet.createdAt
+  }
+}
+
+function getWalletProfile(user, walletId = user.activeWalletId) {
+  const wallet = user.wallets.find((item) => item.id === walletId)
+  if (!wallet) {
+    throw new PublicError('Wallet profile was not found.', 'Choose a wallet that belongs to this account.')
+  }
+  return wallet
+}
+
+function requireWalletName(value) {
+  const error = getWalletNameValidationError(value)
+  if (error) throw new PublicError(error.message, 'Use a name between 1 and 32 characters.')
+  return value.trim()
 }
 
 function readUserStore() {
@@ -1061,14 +1227,39 @@ function updateUser(userId, updater) {
 
 function normalizeStoredUser(user) {
   if (!user) return user
-  return {
+  const wallets = Array.isArray(user.wallets) && user.wallets.length
+    ? user.wallets.map((wallet, index) => ({
+      ...wallet,
+      id: wallet.id || crypto.randomUUID(),
+      name: wallet.name || `Wallet ${index + 1}`,
+      avatarPreset: wallet.avatarPreset || 'mamba',
+      avatarImage: wallet.avatarImage || null,
+      backupConfirmed: Boolean(wallet.backupConfirmed),
+      createdAt: wallet.createdAt || user.createdAt
+    }))
+    : user.seedVault
+      ? [{
+        id: 'wallet-default',
+        name: 'Main wallet',
+        avatarPreset: 'mamba',
+        avatarImage: null,
+        seedVault: user.seedVault,
+        backupConfirmed: Boolean(user.backupConfirmed),
+        createdAt: user.createdAt
+      }]
+      : []
+  const normalized = {
     ...user,
+    wallets,
+    activeWalletId: wallets.some((wallet) => wallet.id === user.activeWalletId) ? user.activeWalletId : wallets[0]?.id || null,
     tokens: user.tokens || [],
     contacts: user.contacts || [],
     activity: user.activity || [],
-    notifications: user.notifications || [],
-    backupConfirmed: Boolean(user.backupConfirmed)
+    notifications: user.notifications || []
   }
+  delete normalized.seedVault
+  delete normalized.backupConfirmed
+  return normalized
 }
 
 function readRequired(name, missing) {
@@ -1126,7 +1317,7 @@ function sendError(response, error, fallback) {
 }
 
 function loadLocalEnv() {
-  const envPath = path.resolve('.env')
+  const envPath = path.resolve(__dirname, '../../../.env')
   if (!fs.existsSync(envPath)) return
 
   const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/)
